@@ -1,0 +1,22 @@
+[package]
+name = "nano-gcp-logging"
+version = "0.1.0"
+edition = "2021"
+authors = ["Enzo Lombardi <enzinol@gmail.com>"]
+description = "A custom logging layer for sending logs to Google Cloud Logging using tracing and tracing-subscriber."
+license = "Apache-2.0"
+repository = "https://github.com/aovestdipaperino/nano-gcp-logging"
+documentation = "https://docs.rs/nano-gcp-logging"
+readme = "README.md"
+keywords = ["logging", "gcp", "google-cloud", "tracing", "async"]
+categories = ["logging", "cloud", "development-tools::debugging"]
+
+[dependencies]
+tokio = { version = "1.41.0", features = ["full"] }
+reqwest = { version = "0.12.8", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1.0.179", features = ["derive"] }
+serde_json = "1.0.109"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
+chrono = "0.4"
+gcp_auth = "0.10.0"
