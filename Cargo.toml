@@ -9,7 +9,7 @@ repository = "https://github.com/aovestdipaperino/nano-gcp-logging"
 documentation = "https://docs.rs/nano-gcp-logging"
 readme = "README.md"
 keywords = ["logging", "gcp", "google-cloud", "tracing", "async"]
-categories = ["logging", "cloud", "development-tools::debugging"]
+categories = ["development-tools::logging", "cloud-computing", "development-tools::debugging"]
 
 [dependencies]
 tokio = { version = "1.41.0", features = ["full"] }
