@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="nano-gcp-logging logo" width="240"/>
+</p>
+
 # nano-gcp-logging
 
 [![Crates.io](https://img.shields.io/crates/v/nano-gcp-logging.svg)](https://crates.io/crates/nano-gcp-logging)
