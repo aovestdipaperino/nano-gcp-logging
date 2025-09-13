@@ -110,6 +110,32 @@ Local testing tips
   - Configure ADC (Application Default Credentials) locally, or run on a VM/GKE node with the proper service account and logging permissions.
   - Confirm your service account has `roles/logging.logWriter` or equivalent.
 
+Sample runtime log (reduced)
+
+Below is a reduced and trimmed example of the runtime output produced when running the `examples/basic.rs` example locally without GCP credentials. The original runtime log has been shortened to keep the README small (<=170 KB). This shows the typical warnings and a few traced events you might see during local runs.
+
+    2025-09-13T12:00:00Z INFO  nano_gcp_logging::example: Starting example application
+    2025-09-13T12:00:00Z WARN  nano_gcp_logging::auth: Warning: failed to initialize AuthenticationManager: No available authentication method was discovered. Proceeding without auth.
+    2025-09-13T12:00:00Z WARN  nano_gcp_logging::sender: Warning: no GCP auth token available; log entries will not be sent. Set up authentication to enable sending.
+    2025-09-13T12:00:00Z INFO  app::startup: Tracing subscriber initialized
+    2025-09-13T12:00:00Z INFO  app::worker: Performing work iteration=1
+    2025-09-13T12:00:00Z DEBUG app::worker: Loaded config from /etc/myapp/config.toml
+    2025-09-13T12:00:00Z INFO  app::worker: Work completed iteration=1 duration=23ms
+    2025-09-13T12:00:01Z INFO  app::worker: Performing work iteration=2
+    2025-09-13T12:00:01Z WARN  app::cache: Cache miss for key=user:42
+    2025-09-13T12:00:01Z INFO  app::worker: Work completed iteration=2 duration=19ms
+    2025-09-13T12:00:02Z ERROR app::http: HTTP request failed url="https://api.example.invalid/health" err="dns error"
+    2025-09-13T12:00:02Z INFO  app::worker: Retrying network operation attempt=1
+    2025-09-13T12:00:02Z INFO  app::worker: Work completed iteration=3 duration=48ms
+    2025-09-13T12:00:03Z INFO  app::shutdown: Graceful shutdown requested
+    2025-09-13T12:00:03Z INFO  app::shutdown: Waiting for background tasks to drain
+    2025-09-13T12:00:03Z INFO  app::shutdown: Background tasks drained, exiting
+
+Notes:
+- Timestamps above are illustrative.
+- When authentication is configured and the metadata server is reachable, the warnings about missing auth will not appear and the background sender will attempt to transmit JSON log entries to the Cloud Logging API.
+- This embedded log is intentionally small; for full runtime captures, run the example and collect logs directly from your environment.
+
 Design notes & rationale
 
 - Fail-fast vs. permissive initialization
