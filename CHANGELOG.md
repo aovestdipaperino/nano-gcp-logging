@@ -5,24 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on "Keep a Changelog" and this project adheres to
 semantic versioning: https://semver.org/
 
-## [Unreleased]
-
-### Added
-- Improve README with clearer Quickstart, Project ID detection, local development notes, and examples.
-- Allow `GcpLoggingLayer::new(project_id: String)` to initialize even when GCP authentication or metadata are unavailable; emits warnings instead of failing.
-- Add behavior to skip sending HTTP log entries when no auth token is present to avoid noisy network errors during local runs.
-- Add example in `examples/basic.rs` demonstrating basic initialization and usage.
-- Add tests exercising initialization and metadata collection.
-
-### Changed
-- Background sender now conditionally attaches a bearer token only when authentication is available.
-- Metadata collection falls back to safe defaults when metadata server calls fail.
-- Token handling normalized to `String` internally to simplify background task logic and error handling.
-- README reorganized and expanded with development tips, behavior notes, and local testing instructions.
+## [0.2.0] - 2026-03-21
 
 ### Fixed
-- Fix failing initialization in test environment by tolerating missing authentication and metadata.
-- Prevent repeated noisy failure messages when running examples locally without credentials.
+- **CRITICAL: Fix segfault in token refresh** — upgrade `gcp_auth` from 0.10 to 0.12, replacing deprecated `AuthenticationManager` with `TokenProvider` API. The old version caused a null pointer dereference in the token refresh closure after ~19 minutes of operation.
+- **CRITICAL: Fix token expiration after ~1 hour** — tokens are now refreshed on every send via `provider.token()` (the provider caches internally and only refreshes when expired). Previously, a single token was acquired at startup and used forever, causing silent auth failures after expiry.
+- **Add panic guard around log sender task** — the background sender loop is now wrapped in `catch_unwind` with automatic restart after 5 seconds. Previously, a panic in the sender would silently kill the logging task.
+
+### Changed
+- **BREAKING: `new()` returns `Result<Self, GcpLoggingError>` instead of `Result<Self, Box<dyn Error>>`** — typed error enum for better error handling.
+- Switch from unbounded channel to bounded `mpsc::channel(8192)` with backpressure — prevents unbounded memory growth under high log volume.
+- Use `try_send` instead of `send` on the bounded channel — non-blocking on the logging hot path.
+- Structs `ContainerMetadata`, `InstanceMetadata`, `LogContextMetadata` now derive `Clone`.
+- Added `futures` and `thiserror` as dependencies.
 
 ---
 
@@ -36,15 +31,3 @@ semantic versioning: https://semver.org/
   - Async background log delivery using Tokio and `reqwest`.
   - `collect_log_metadata` helper for gathering instance/container metadata.
   - Basic example and integration test(s).
-
-### Changed
-- N/A (initial release)
-
-### Fixed
-- N/A (initial release)
-
----
-
-Notes
-- Future releases will include options for configurable buffering, retry/backoff strategies, and more robust testing hooks (e.g., injectable HTTP client for deterministic offline tests).
-- If you depend on strict fail-fast behavior (i.e., require initialization to fail when auth/metadata are missing), consider validating the environment before calling `GcpLoggingLayer::new` or requesting a configuration option to enable strict mode.

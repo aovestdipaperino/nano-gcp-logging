@@ -3,19 +3,25 @@
 //! This layer captures log events, enriches them with metadata
 //! about the running environment, and sends them to Google Cloud Logging.
 //! (C) 2025 Enzo Lombardi
+
 use chrono::Local;
-use gcp_auth::AuthenticationManager;
+use gcp_auth::TokenProvider;
 
 use serde::Serialize;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tokio::sync::mpsc;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::Layer;
 
+/// Maximum number of log entries that can be buffered before backpressure.
+/// Sized to absorb bursts without dropping logs under normal operation.
+const LOG_CHANNEL_CAPACITY: usize = 8192;
+
 /// Metadata for a container, capturing its ID and name
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ContainerMetadata {
     /// Unique identifier of the container
     pub id: String,
@@ -24,7 +30,7 @@ pub struct ContainerMetadata {
 }
 
 /// Metadata for a Google Compute Engine instance
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InstanceMetadata {
     /// Name of the instance
     pub name: String,
@@ -37,7 +43,7 @@ pub struct InstanceMetadata {
 }
 
 /// Comprehensive logging context metadata
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct LogContextMetadata {
     /// Optional container metadata
     pub container: Option<ContainerMetadata>,
@@ -54,10 +60,21 @@ struct GcpLogEntry {
     severity: String,
 }
 
+/// Errors that can occur during GCP logging initialization and operation.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum GcpLoggingError {
+    #[error("GCP authentication failed: {0}")]
+    Auth(#[from] gcp_auth::Error),
+
+    #[error("HTTP request failed: {0}")]
+    Http(#[from] reqwest::Error),
+}
+
 /// Custom logging layer for sending logs to Google Cloud Logging
 pub struct GcpLoggingLayer {
     /// Channel for sending log entries
-    channel: UnboundedSender<GcpLogEntry>,
+    channel: mpsc::Sender<GcpLogEntry>,
 }
 
 impl GcpLoggingLayer {
@@ -68,112 +85,31 @@ impl GcpLoggingLayer {
     ///
     /// # Returns
     /// A Result containing the initialized GcpLoggingLayer or an error
-    pub async fn new(project_id: String) -> Result<Self, Box<dyn std::error::Error>> {
-        // Try to initialize authentication, but allow initialization to succeed
-        // even if authentication is not available (e.g. in tests or local dev).
-        // In such cases we proceed with an empty token and continue sending logs
-        // best-effort (requests will be unauthenticated).
-        let token = match AuthenticationManager::new().await {
-            Ok(auth) => match auth
-                .get_token(&["https://www.googleapis.com/auth/logging.write"])
-                .await
-            {
-                // Convert the acquired Token to a String representation so `token`
-                // has a consistent `String` type across all match arms.
-                Ok(tok) => tok.as_str().to_string(),
-                Err(e) => {
-                    eprintln!(
-                        "Warning: failed to acquire GCP token: {}. Proceeding without auth.",
-                        e
-                    );
-                    String::new()
-                }
-            },
-            Err(e) => {
-                eprintln!("Warning: failed to initialize AuthenticationManager: {}. Proceeding without auth.", e);
-                String::new()
-            }
-        };
+    ///
+    /// # Errors
+    /// Returns `GcpLoggingError::Auth` if GCP authentication fails.
+    /// Returns `GcpLoggingError::Http` if metadata collection fails.
 
-        // Attempt to collect metadata, but fall back to sensible defaults on error.
-        // We clone project_id to allow creating a fallback instance that still
-        // contains the provided project id in case metadata lookup fails.
-        let metadata = match collect_log_metadata(project_id.clone()).await {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!(
-                    "Warning: failed to collect metadata: {}. Using fallback values.",
-                    e
-                );
-                LogContextMetadata {
-                    container: None,
-                    instance: InstanceMetadata {
-                        name: "unknown".into(),
-                        id: "0".into(),
-                        zone: "".into(),
-                        project_id,
-                    },
-                }
-            }
-        };
+    /// GCP logging scopes
+    const SCOPES: &[&str] = &["https://www.googleapis.com/auth/logging.write"];
 
-        let (channel, mut rx) = unbounded_channel::<GcpLogEntry>();
+    pub async fn new(project_id: String) -> Result<Self, GcpLoggingError> {
+        let provider = gcp_auth::provider().await?;
+
+        // Verify we can get a token at startup
+        let _token = provider.token(Self::SCOPES).await?;
+        let metadata = collect_log_metadata(project_id).await?;
+        let (channel, mut rx) = mpsc::channel::<GcpLogEntry>(LOG_CHANNEL_CAPACITY);
         let client = reqwest::Client::new();
 
-        // Spawn the background task that drains the channel and sends logs.
-        // If we don't have a token (empty string), skip sending entries to avoid noisy errors.
         tokio::spawn(async move {
-            // If token is empty we will not attempt HTTP requests; warn once.
-            let mut warned_no_auth = false;
-            let skip_sending = token.is_empty();
-
             loop {
-                let log_entry = rx.recv().await;
-                if log_entry.is_none() {
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    continue;
-                }
-                let log_entry = log_entry.unwrap();
-
-                if skip_sending {
-                    if !warned_no_auth {
-                        eprintln!("Warning: no GCP auth token available; log entries will not be sent. Set up authentication to enable sending.");
-                        warned_no_auth = true;
-                    }
-                    // Drop the entry without attempting to send it.
-                    continue;
-                }
-
-                let entry = serde_json::json!({
-                    "logName": format!("projects/{}/logs/proxie", metadata.instance.project_id),
-                    "resource": {
-                        "type": "gce_instance",
-                        "labels": {
-                            "instance_id": metadata.instance.id,
-                            "zone": metadata.instance.zone,
-                            "project_id": metadata.instance.project_id
-                        }
-                    },
-                    "severity": log_entry.severity,
-                    "jsonPayload": {
-                        "message": log_entry.message,
-                        "container": metadata.container,
-                        "instance": metadata.instance
-                    }
-                });
-                let body = serde_json::json!({ "entries": [entry] });
-
-                // Build the request and conditionally add auth if available.
-                let mut req = client
-                    .post("https://logging.googleapis.com/v2/entries:write")
-                    .json(&body);
-                if !token.is_empty() {
-                    req = req.bearer_auth(token.as_str());
-                }
-
-                let res = req.send().await;
-                if let Err(e) = res {
-                    eprintln!("Failed to send log entry: {}", e);
+                let result = std::panic::AssertUnwindSafe(
+                    gcp_log_sender(provider.clone(), metadata.clone(), client.clone(), &mut rx),
+                );
+                if futures::FutureExt::catch_unwind(result).await.is_err() {
+                    eprintln!("GCP log sender panicked, restarting in 5s");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
             }
         });
@@ -234,9 +170,63 @@ where
 
         let log_entry = GcpLogEntry { severity, message };
 
-        let result = self.channel.send(log_entry);
-        if result.is_err() {
-            eprintln!("Error {:?}", result);
+        let result = self.channel.try_send(log_entry);
+        if let Err(e) = result {
+            eprintln!("Failed to send log entry: {}", e);
+        }
+    }
+}
+
+/// Background log sender loop. Refreshes the token via the provider on each send
+/// (the provider caches tokens internally and only refreshes when expired).
+async fn gcp_log_sender(
+    provider: Arc<dyn TokenProvider>,
+    metadata: LogContextMetadata,
+    client: reqwest::Client,
+    rx: &mut mpsc::Receiver<GcpLogEntry>,
+) {
+    loop {
+        let Some(log_entry) = rx.recv().await else {
+            // Channel closed — sleep briefly to avoid busy loop on spurious wakeups
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+
+        // Get a fresh (or cached) token for each request
+        let token = match provider.token(GcpLoggingLayer::SCOPES).await {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("GCP auth token refresh failed: {}", e);
+                continue;
+            }
+        };
+
+        let entry = serde_json::json!({
+            "logName": format!("projects/{}/logs/proxie", metadata.instance.project_id),
+            "resource": {
+                "type": "gce_instance",
+                "labels": {
+                    "instance_id": metadata.instance.id,
+                    "zone": metadata.instance.zone,
+                    "project_id": metadata.instance.project_id
+                }
+            },
+            "severity": log_entry.severity,
+            "jsonPayload": {
+                "message": log_entry.message,
+                "container": metadata.container,
+                "instance": metadata.instance
+            }
+        });
+        let body = serde_json::json!({ "entries": [entry] });
+        let res = client
+            .post("https://logging.googleapis.com/v2/entries:write")
+            .bearer_auth(token.as_str())
+            .json(&body)
+            .send()
+            .await;
+        if let Err(e) = res {
+            eprintln!("Failed to send log entry: {}", e);
         }
     }
 }
@@ -248,9 +238,12 @@ where
 ///
 /// # Returns
 /// A Result containing the LogContextMetadata or an error
+///
+/// # Errors
+/// Returns `GcpLoggingError::Http` if the metadata service is unreachable.
 pub async fn collect_log_metadata(
     project_id: String,
-) -> Result<LogContextMetadata, Box<dyn std::error::Error>> {
+) -> Result<LogContextMetadata, GcpLoggingError> {
     let client = reqwest::Client::new();
 
     let container_id = get_container_id();
