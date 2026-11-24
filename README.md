@@ -4,6 +4,8 @@
 
 # nano-gcp-logging
 
+[![GitHub stars](https://img.shields.io/github/stars/aovestdipaperino/nano-gcp-logging?logo=github&color=brightgreen)](https://github.com/aovestdipaperino/nano-gcp-logging/stargazers)
+
 [![Crates.io](https://img.shields.io/crates/v/nano-gcp-logging.svg)](https://crates.io/crates/nano-gcp-logging)
 [![Docs.rs](https://docs.rs/nano-gcp-logging/badge.svg)](https://docs.rs/nano-gcp-logging)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
