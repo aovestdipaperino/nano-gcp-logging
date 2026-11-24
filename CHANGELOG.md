@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on "Keep a Changelog" and this project adheres to
 semantic versioning: https://semver.org/
 
-## [Unreleased]
+## [0.2.1] - 2026-11-24
 
 ### Fixed
 - **Logs were silently lost when a program exited right after logging.** Entries are delivered by a background task and nothing waited for it. Added `GcpLoggingLayer::flush()` (and made the layer `Clone` so one clone can flush while another is in the subscriber).

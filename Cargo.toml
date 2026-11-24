@@ -1,6 +1,6 @@
 [package]
 name = "nano-gcp-logging"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Enzo Lombardi <enzinol@gmail.com>"]
 description = "A custom logging layer for sending logs to Google Cloud Logging using tracing and tracing-subscriber."
