@@ -26,22 +26,84 @@ Features
 - Automatic enrichment with GCE/GKE metadata (when running on GCE/GKE)
 - Async, non-blocking background sender using Tokio
 - Integrates with the `tracing` / `tracing-subscriber` ecosystem
-- Resilient local behavior: tolerates missing auth/metadata for local dev and tests
+- Works off Google Cloud too: missing GCE metadata is tolerated, and entries then use the `global` resource
+- `flush()` so short-lived programs do not exit before their logs are sent
 
 Table of contents
 - Quickstart
 - Project ID and metadata
 - Usage example
-- Behavior and local development notes
-- Configuration & behavior choices
-- Examples & tests
-- Contributing
+
+Below is a minimal example. Replace `your-gcp-project-id` with your project id or set the `PROJECT_ID` env var. Logs are delivered by a background task, so call `flush()` before the program exits; without it a short program can finish before anything is sent.
+
+    use nano_gcp_logging::GcpLoggingLayer;
+    use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::SubscriberExt;
+    use std::env;
+
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        let project_id = env::var("PROJECT_ID").unwrap_or_else(|_| "your-gcp-project-id".into());
+        let gcp_layer = GcpLoggingLayer::new(project_id).await?;
+
+        // Keep a clone to flush with; the clone given to the subscriber shares the sender.
+        let flusher = gcp_layer.clone();
+        let subscriber = Registry::default().with(gcp_layer);
+        tracing::subscriber::set_global_default(subscriber)?;
+
+        tracing::info!("Hello from nano-gcp-logging!");
+
+        flusher.flush().await; // wait until the entry has been sent
+        Ok(())
+    }
+
+Running locally (not on Google Cloud)
+
+Use the builder to say so, and to choose the log name:
+
+    let gcp_layer = GcpLoggingLayer::builder(project_id)
+        .log_name("my-app")      // default: "proxie"
+        .skip_metadata()         // do not probe the GCE metadata server
+        .build()
+        .await?;
+
+Credentials are found by `gcp_auth` in this order: the service account file named by `GOOGLE_APPLICATION_CREDENTIALS`, the application default credentials file under `~/.config/gcloud`, the GCE metadata server, then the `gcloud` tool on the `PATH`. Set `GOOGLE_APPLICATION_CREDENTIALS` to use a specific key file. The service account needs `roles/logging.logWriter`.
+
+Where to find the logs: Logs Explorer, filtered on the log name. Entries are written to `projects/<project>/logs/<log name>`, which is `proxie` unless you set `log_name`, and not to any log you wrote with `gcloud logging write`. Off Google Cloud they use the `global` resource; on a GCE instance they use `gce_instance`.
+
+Behavior notes
+
+- Authentication
+  - `GcpLoggingLayer::new` and `build()` return an error if no credentials can be found or no token can be obtained. They do not silently disable shipping.
+  - A token is requested on every send; `gcp_auth` caches it until it expires.
+
+- Metadata discovery
+  - Unless `skip_metadata()` is used, the layer asks the GCE metadata server for the instance id first. If that does not answer within 750 ms (change it with `metadata_timeout`), the program is treated as not running on Google Cloud and no other lookups are made, so startup is not held up.
+  - The container id is read from `/proc/self/cgroup` when present.
+
+- Background sending
+  - Events go through a bounded channel of 8192 entries to a background task, so logging never blocks the caller. When the channel is full, the entry is dropped and a message is printed to stderr.
+  - If Cloud Logging rejects an entry (for example a permission error), the HTTP status and the response body are printed to stderr. Transport errors are printed with their causes (DNS, connection refused, certificate).
+  - Events from the HTTP stack itself (`hyper`, `reqwest`, `h2`, `rustls`, `tower`, `gcp_auth`) are never shipped. They would otherwise make every delivery generate more entries to deliver.
+
+Examples & tests
+
+- `examples/basic.rs` initializes the layer, emits a few events and flushes.
+- `tests/delivery.rs` runs the layer against a local stand-in for the Logging API with a fake token provider, so it needs no credentials.
+- `tests/basic.rs` needs working Google credentials.
+
+Design notes
+
+- Delivery is best effort: there is no retry, and a log entry that fails to send is reported on stderr and not queued again.
+- For durable buffering, retries with backoff or batching, wrap or extend the layer; the crate stays small on purpose.
+
+Contributing
 - License and author
 
 Quickstart
 
 1. Add to your `Cargo.toml`:
-    nano-gcp-logging = "0.1"
+    nano-gcp-logging = "0.2"
 
 2. Create and initialize the layer, then attach it to a `tracing` subscriber.
 

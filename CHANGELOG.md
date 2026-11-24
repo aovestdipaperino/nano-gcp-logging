@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on "Keep a Changelog" and this project adheres to
 semantic versioning: https://semver.org/
 
+## [Unreleased]
+
+### Fixed
+- **Logs were silently lost when a program exited right after logging.** Entries are delivered by a background task and nothing waited for it. Added `GcpLoggingLayer::flush()` (and made the layer `Clone` so one clone can flush while another is in the subscriber).
+- **Runaway self-logging.** The layer shipped the `tracing` events of its own HTTP client (`hyper`, `reqwest`, `h2`, `rustls`, ...), and every delivery produced more of them. One `info!` could generate thousands of entries. Events from those targets are now skipped.
+- **Rejected entries were invisible.** Only transport failures were reported; an HTTP 4xx from Cloud Logging (permission, invalid resource) was dropped without a word. The status and response body are now printed to stderr, and transport errors show their causes.
+- **Entries off Google Cloud used a `gce_instance` resource with empty labels,** which describes no real instance and is likely to be rejected. They now use the `global` resource; `gce_instance` is used only when the instance id and zone are known.
+- **Metadata lookups could slow or confuse startup.** The metadata requests had no timeout and an HTTP error page was taken as the value. They now time out (750 ms by default), stop after the first failed probe, and ignore error responses.
+
+### Added
+- `GcpLoggingLayer::builder(project_id)` with `log_name`, `skip_metadata`, `metadata_timeout`, `token_provider` and `endpoint`.
+- `GcpLoggingLayer::flush()`.
+
+### Changed
+- README corrected: it described 0.1 behaviour (initialising without credentials, an unbounded channel) that has not applied since 0.2.0.
+
+---
+
 ## [0.2.0] - 2026-03-21
 
 ### Fixed

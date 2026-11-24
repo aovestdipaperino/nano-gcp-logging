@@ -709,6 +709,7 @@ dependencies = [
 name = "nano-gcp-logging"
 version = "0.2.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "futures",
  "gcp_auth",
